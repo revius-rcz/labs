@@ -5,13 +5,14 @@
 1. [Mental model](#mental-model)
 2. [Host preparation](#host-preparation)
 3. [Create the first lab](#create-the-first-lab)
-4. [Operate the VM](#operate-the-vm)
-5. [Provision software](#provision-software)
-6. [Configure networking](#configure-networking)
-7. [Share files](#share-files)
-8. [Build multi-machine labs](#build-multi-machine-labs)
-9. [Make labs reproducible](#make-labs-reproducible)
-10. [Maintain the lab](#maintain-the-lab)
+4. [Modify CPU, RAM, disks, and filesystems](#modify-cpu-ram-disks-and-filesystems)
+5. [Operate the VM](#operate-the-vm)
+6. [Provision software](#provision-software)
+7. [Configure networking](#configure-networking)
+8. [Share files](#share-files)
+9. [Build multi-machine labs](#build-multi-machine-labs)
+10. [Make labs reproducible](#make-labs-reproducible)
+11. [Maintain the lab](#maintain-the-lab)
 
 ## Mental model
 
@@ -99,6 +100,178 @@ vagrant status
 ```
 
 The first `up` downloads the box if necessary, imports it into VirtualBox, configures virtual hardware and networks, boots it, waits for SSH, mounts synced folders, and runs provisioners.
+
+## Modify CPU, RAM, disks, and filesystems
+
+### Understand the storage layers
+
+Changing storage is not one operation. Work through the relevant layers in order:
+
+| Layer | Controlled by | Typical action |
+|---|---|---|
+| Virtual CPU and RAM | VirtualBox provider configuration | Change `vb.cpus` or `vb.memory`, then reload the powered-off VM |
+| Virtual disk capacity/attachment | Vagrant disk configuration and VirtualBox | Change `config.vm.disk`, then reload the VM |
+| Partition or LVM physical volume | Guest operating system | Grow the partition or physical volume after the virtual disk grows |
+| Logical volume | Guest LVM | Extend the intended logical volume |
+| Filesystem | Guest filesystem tools | Grow ext4, XFS, or another filesystem with its own supported tool |
+
+`df -h` reports filesystem capacity, not raw virtual disk capacity. A successfully enlarged VirtualBox disk can therefore remain invisible to `df` until the guest partition, LVM, and filesystem layers are extended.
+
+### Change RAM and virtual CPUs
+
+Set resources in the VirtualBox provider block:
+
+```ruby
+config.vm.provider "virtualbox" do |vb|
+  vb.memory = 8192 # MiB
+  vb.cpus = 4
+end
+```
+
+Environment-variable overrides make one lab definition usable on different hosts:
+
+```ruby
+config.vm.provider "virtualbox" do |vb|
+  vb.memory = Integer(ENV.fetch("LAB_MEMORY_MB", "4096"), 10)
+  vb.cpus = Integer(ENV.fetch("LAB_CPUS", "2"), 10)
+end
+```
+
+Apply and verify the change:
+
+```bash
+vagrant validate
+vagrant reload
+vagrant ssh -c 'printf "CPUs: "; nproc; free -h'
+```
+
+If reload cannot change the hardware cleanly, use `vagrant halt` followed by `vagrant up`. Leave enough CPU and RAM for the host OS and other workloads. More virtual CPUs can reduce performance when the host is oversubscribed.
+
+### Grow the primary virtual disk
+
+Declare the desired total size, not an increment:
+
+```ruby
+config.vm.disk :disk, size: "80GB", primary: true
+```
+
+Then apply the VirtualBox disk change while the guest is powered off:
+
+```bash
+vagrant validate
+vagrant halt
+vagrant up
+```
+
+Vagrant can grow a VirtualBox primary disk but cannot shrink it. Many boxes use VMDK; Vagrant may temporarily convert the disk to VDI, resize it, and convert it back. Back up non-disposable data and do not interrupt this operation.
+
+Inspect the guest layout before changing partitions or filesystems:
+
+```bash
+vagrant ssh
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+findmnt -no SOURCE,FSTYPE /
+df -hT
+sudo pvs 2>/dev/null || true
+sudo vgs 2>/dev/null || true
+sudo lvs 2>/dev/null || true
+```
+
+Resolve the actual disk, partition, LVM, filesystem, and mount point from this output. Device names such as `/dev/sda`, `/dev/sda3`, `/dev/vda`, and `/dev/nvme0n1p3` are examples, not interchangeable commands.
+
+#### Plain partition with ext4
+
+For an identified root partition such as `/dev/sda1`:
+
+```bash
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+df -hT /
+```
+
+`growpart` is commonly supplied by `cloud-guest-utils` on Debian/Ubuntu and `cloud-utils-growpart` on RHEL-compatible systems.
+
+#### Plain partition with XFS
+
+Grow the identified partition, then grow XFS by mount point:
+
+```bash
+sudo growpart /dev/sda 1
+sudo xfs_growfs /
+df -hT /
+```
+
+XFS can grow while mounted but cannot be shrunk.
+
+#### LVM-backed filesystem
+
+For an identified LVM physical-volume partition such as `/dev/sda3`:
+
+```bash
+sudo growpart /dev/sda 3
+sudo pvresize /dev/sda3
+sudo pvs
+sudo vgs
+sudo lvs
+sudo lvextend -r -l +100%FREE /dev/<vg>/<lv>
+```
+
+Replace the example device and logical-volume path with values verified by `pvs` and `lvs`. `lvextend -r` extends both the logical volume and a supported filesystem. Do not allocate all free extents when the volume group intentionally reserves capacity for snapshots or other logical volumes.
+
+### Attach an additional data disk
+
+Add a named disk to the `Vagrantfile`:
+
+```ruby
+config.vm.disk :disk, size: "20GB", name: "lab-data"
+```
+
+Apply and identify it:
+
+```bash
+vagrant reload
+vagrant ssh
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL
+```
+
+Do not assume that the new device is `/dev/sdb`. Compare the before/after inventory and confirm that the selected device is empty. The following example is destructive and is valid only after `/dev/sdb` has been positively identified as the new disk:
+
+```bash
+sudo parted /dev/sdb --script mklabel gpt mkpart primary 0% 100%
+sudo partprobe /dev/sdb
+sudo mkfs.xfs /dev/sdb1
+sudo install -d -m 0755 /data
+sudo mount /dev/sdb1 /data
+findmnt /data
+```
+
+Persist the mount by UUID rather than a device name:
+
+```bash
+sudo blkid /dev/sdb1
+```
+
+Add the verified UUID and filesystem type to `/etc/fstab`:
+
+```fstab
+UUID=<verified-uuid> /data xfs defaults,nofail 0 2
+```
+
+Validate before rebooting:
+
+```bash
+sudo umount /data
+sudo mount -a
+findmnt /data
+```
+
+Provisioning can automate this workflow only after it verifies the expected disk identity, existing filesystem, UUID, and `/etc/fstab` entry so reruns cannot reformat data.
+
+### Remove or shrink storage
+
+Before removing a secondary disk, stop applications, back up its data, unmount it, and remove its `/etc/fstab` entry. Removing a Vagrant-managed disk from `Vagrantfile` and running `vagrant reload` detaches it and deletes its host-side virtual medium.
+
+Do not attempt to shrink a virtual disk by setting a smaller `size`. XFS cannot shrink, ext4 shrinking is an offline multi-layer operation, and VirtualBox/Vagrant do not support shrinking the primary virtual disk through this configuration. For disposable labs, create a correctly sized replacement disk or rebuild the VM and restore only required data.
 
 ## Operate the VM
 
@@ -282,4 +455,3 @@ vagrant up --provider=virtualbox
 ```
 
 Back up or export non-disposable data before rebuilding. After validating the new lab, old unused box versions can be reviewed with `vagrant box prune --dry-run` and removed interactively.
-
