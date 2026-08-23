@@ -13,7 +13,8 @@
 9. [Box download, TLS, proxy, and DNS failures](#box-download-tls-proxy-and-dns-failures)
 10. [Plugin failures](#plugin-failures)
 11. [State mismatch or inaccessible VM](#state-mismatch-or-inaccessible-vm)
-12. [Collect a support bundle](#collect-a-support-bundle)
+12. [CPU, memory, disk, and filesystem failures](#cpu-memory-disk-and-filesystem-failures)
+13. [Collect a support bundle](#collect-a-support-bundle)
 
 ## Start with evidence
 
@@ -313,6 +314,65 @@ Inspect `.vagrant/machines/<machine>/virtualbox/id` without changing it. Compare
 - If the VM is disposable, the cleanest recovery is usually `vagrant destroy` followed by `vagrant up`.
 - If Vagrant no longer owns an orphaned VM, unregistering/deleting it directly is destructive and must be explicitly confirmed after exact VM and disk paths are verified.
 - Do not copy another VM's UUID into `.vagrant` as a guess.
+
+## CPU, memory, disk, and filesystem failures
+
+### Changed CPU or memory is not visible
+
+```bash
+vagrant reload
+vagrant ssh -c 'nproc; free -h'
+```
+
+If the values remain unchanged, halt the VM completely and start it again. Confirm the settings are inside the correct machine's `config.vm.provider "virtualbox"` block and are not overridden by another block or environment variable. Compare with:
+
+```bash
+VBoxManage showvminfo "<vm-name>" --machinereadable
+```
+
+### Primary virtual disk did not grow
+
+- Confirm the definition uses `primary: true` and a size larger than the current disk.
+- Run `vagrant reload`; VirtualBox disk changes require a powered-off guest.
+- Confirm the installed Vagrant/VirtualBox pair supports Vagrant disks.
+- Check host free space. Dynamic disks still need room to grow and resize conversion may temporarily need substantial extra capacity.
+- Review snapshots and the VirtualBox storage chain before direct provider repair.
+- If a VMDK conversion/resize was interrupted, preserve all disk files and logs before retrying or restoring a backup.
+
+### Virtual disk grew but `df -h` did not
+
+This normally means a lower storage layer grew but the partition, LVM physical volume, logical volume, or filesystem did not.
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+findmnt -no SOURCE,FSTYPE /
+df -hT
+sudo pvs 2>/dev/null || true
+sudo vgs 2>/dev/null || true
+sudo lvs 2>/dev/null || true
+```
+
+Compare the disk, partition, logical-volume, and filesystem sizes. Grow only the missing layers in order. Use `resize2fs` for ext4, `xfs_growfs` with the mount point for XFS, and `pvresize` plus `lvextend -r` for an LVM layout. Do not run any command until the exact devices are resolved.
+
+### New disk is visible but has no mount point
+
+A newly attached disk is intentionally blank. Identify it by comparing `lsblk` before and after attachment. Then partition it if desired, create a filesystem, mount it, and add an `/etc/fstab` entry using its filesystem UUID. `mkfs` destroys existing data, so confirm the disk is empty first.
+
+### Guest fails to boot after adding `/etc/fstab` entry
+
+- Boot through the VirtualBox console or recovery environment.
+- Compare the configured UUID with `blkid`.
+- Correct the filesystem type, mount point, and options.
+- Use `nofail` only when the disk is genuinely optional.
+- Run `mount -a` and verify with `findmnt` before rebooting.
+
+### Host disk is full but guest reports free space
+
+Guest `df` does not show host capacity. Find the VM's disk paths with `VBoxManage showvminfo`, then inspect free space on the host filesystem containing those files. Snapshots, saved states, logs, box caches, and temporary resize conversions also consume host storage.
+
+### A configured disk disappeared or was deleted
+
+Removing a Vagrant-managed disk from the `Vagrantfile` and running `vagrant reload` causes Vagrant to detach and delete that medium. Stop immediately if recovery is required; avoid writing new data to the host filesystem and restore from a backup or snapshot according to the data-recovery plan.
 
 ## Collect a support bundle
 
