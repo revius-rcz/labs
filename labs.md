@@ -107,7 +107,7 @@ This section is not applicable to macOS users.
 
 ### Vagrant
 
-For a complete tutorial, command cheat sheet, `Vagrantfile` reference, example lab, and troubleshooting workflow, see [Vagrant with VirtualBox Labs](vagrant-virtualbox/SKILL.md).
+For a complete tutorial, command cheat sheet, `Vagrantfile` reference, example lab, and troubleshooting workflow, see [Vagrant with VirtualBox Labs](vagrant/SKILL.md).
 
 > Disconnect from the VPN when installing Vagrant plugins.
 
