@@ -8,6 +8,11 @@ Vagrant.configure("2") do |config|
   config.vm.hostname = "lab01"
   config.vm.boot_timeout = 900
 
+  # Storage examples. Enable only after reviewing the guest partition,
+  # LVM, and filesystem growth steps in ../../tutorial.md.
+  # config.vm.disk :disk, size: "40GB", primary: true
+  # config.vm.disk :disk, size: "20GB", name: "lab-data"
+
   config.vm.network "forwarded_port",
     guest: 8080,
     host: 8080,
@@ -26,4 +31,3 @@ Vagrant.configure("2") do |config|
     vb.cpus = Integer(ENV.fetch("LAB_CPUS", "2"), 10)
   end
 end
-

@@ -62,6 +62,63 @@ Name a provisioner in the `Vagrantfile` when it must be selectable:
 config.vm.provision "shell", name: "base", path: "provision.sh"
 ```
 
+## CPU, RAM, disks, and filesystems
+
+VirtualBox provider resources:
+
+```ruby
+config.vm.provider "virtualbox" do |vb|
+  vb.memory = 8192 # MiB
+  vb.cpus = 4
+end
+```
+
+Vagrant-managed disks:
+
+```ruby
+# Grow the primary disk to a total of 80 GB
+config.vm.disk :disk, size: "80GB", primary: true
+
+# Create and attach a separate 20 GB disk
+config.vm.disk :disk, size: "20GB", name: "lab-data"
+```
+
+Apply hardware/storage changes:
+
+```bash
+vagrant validate
+vagrant reload
+# If needed: vagrant halt && vagrant up
+```
+
+Inspect the guest before modifying storage:
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+findmnt -no SOURCE,FSTYPE /
+df -hT
+sudo pvs; sudo vgs; sudo lvs
+```
+
+Common grow operations after resolving the exact devices:
+
+```bash
+# Plain partition + ext4 example
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+
+# Plain partition + XFS example
+sudo growpart /dev/sda 1
+sudo xfs_growfs /
+
+# LVM example
+sudo growpart /dev/sda 3
+sudo pvresize /dev/sda3
+sudo lvextend -r -l +100%FREE /dev/<vg>/<lv>
+```
+
+Device paths are examples only. `mkfs`, partition-table changes, and choosing the wrong LVM object can destroy data. Vagrant/VirtualBox can grow but not shrink the primary virtual disk.
+
 ## Boxes
 
 ```bash
@@ -159,4 +216,3 @@ Prefer letting Vagrant change a Vagrant-managed VM. Direct `VBoxManage modifyvm`
 | Synced folder | `vagrant reload` |
 | Shell environment variable read by config | Rerun the intended command with the variable set |
 | Multi-machine node definition | `vagrant up <node>` or `vagrant up` |
-
