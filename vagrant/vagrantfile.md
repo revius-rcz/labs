@@ -9,9 +9,11 @@
 5. [Provisioning](#provisioning)
 6. [Networking](#networking)
 7. [Synced folders](#synced-folders)
-8. [Provider configuration](#provider-configuration)
-9. [Multi-machine configuration](#multi-machine-configuration)
-10. [Review checklist](#review-checklist)
+8. [CPU and memory](#cpu-and-memory)
+9. [Disks and filesystems](#disks-and-filesystems)
+10. [Provider configuration](#provider-configuration)
+11. [Multi-machine configuration](#multi-machine-configuration)
+12. [Review checklist](#review-checklist)
 
 ## Purpose and filename
 
@@ -48,6 +50,7 @@ Vagrant can merge configuration from boxes, the project, and other supported loc
 | `config.vm.network` | Forwarded, private, or public network | See below |
 | `config.vm.synced_folder` | Host/guest shared path | `"./shared", "/lab"` |
 | `config.vm.provision` | Guest configuration step | `"shell", path: "provision.sh"` |
+| `config.vm.disk` | Grow the primary disk or attach another disk | `:disk, size: "20GB", name: "data"` |
 | `config.vm.define` | Named machine in a multi-machine environment | `"db"` |
 
 Do not copy a box version from this reference without checking the catalog. Pin the version actually tested by the lab owner.
@@ -198,6 +201,89 @@ config.vm.synced_folder "./src", "/srv/src", type: "rsync"
 
 `rsync` is normally one-way from host to guest. Do not edit the guest copy expecting the change to return to the host.
 
+## CPU and memory
+
+CPU count and memory are VirtualBox provider settings:
+
+```ruby
+config.vm.provider "virtualbox" do |vb|
+  vb.memory = 8192 # MiB
+  vb.cpus = 4
+end
+```
+
+For host-specific sizing without editing the file:
+
+```ruby
+config.vm.provider "virtualbox" do |vb|
+  vb.memory = Integer(ENV.fetch("LAB_MEMORY_MB", "4096"), 10)
+  vb.cpus = Integer(ENV.fetch("LAB_CPUS", "2"), 10)
+end
+```
+
+Run `vagrant reload` to apply a change. If the provider cannot reconfigure cleanly, use `vagrant halt` followed by `vagrant up`. Verify inside the guest with `nproc` and `free -h`.
+
+## Disks and filesystems
+
+### Grow the primary virtual disk
+
+Set the desired total virtual-disk size:
+
+```ruby
+config.vm.disk :disk, size: "80GB", primary: true
+```
+
+`primary: true` identifies the existing boot disk. Without it, Vagrant creates and attaches a new disk. Vagrant and VirtualBox can grow the primary disk but cannot shrink it.
+
+Apply disk changes with a powered-off guest:
+
+```bash
+vagrant validate
+vagrant reload
+```
+
+Vagrant may convert a VMDK temporarily to resize it. Back up non-disposable data and do not interrupt the operation.
+
+### Attach another hard disk
+
+```ruby
+config.vm.disk :disk, size: "20GB", name: "lab-data"
+```
+
+Each Vagrant-managed disk needs a stable, unique `name`. The VirtualBox storage controller limits how many disks can be attached.
+
+Vagrant also supports attaching an ISO as a virtual DVD:
+
+```ruby
+config.vm.disk :dvd, name: "installer", file: "./installer.iso"
+```
+
+Removing a Vagrant-managed disk definition and reloading the VM causes Vagrant to detach and delete that virtual disk medium. Back up and unmount it first.
+
+### Grow the guest storage layers
+
+The `Vagrantfile` controls virtual capacity and attachments; it does not reliably grow every guest partition, LVM layout, or filesystem. Inspect the guest:
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+findmnt -no SOURCE,FSTYPE /
+df -hT
+sudo pvs 2>/dev/null || true
+sudo vgs 2>/dev/null || true
+sudo lvs 2>/dev/null || true
+```
+
+Then use the correct guest workflow:
+
+| Layout | Required sequence |
+|---|---|
+| Plain ext4 partition | Grow partition → `resize2fs <partition>` |
+| Plain XFS partition | Grow partition → `xfs_growfs <mount-point>` |
+| LVM with ext4/XFS | Grow partition if present → `pvresize` → `lvextend -r` |
+| New disk | Identify disk → partition if desired → create filesystem → mount by UUID → validate `/etc/fstab` |
+
+Never infer a device path from an example. Resolve it from `lsblk`, `findmnt`, and LVM commands. See [tutorial.md](tutorial.md#modify-cpu-ram-disks-and-filesystems) for complete examples.
+
 ## Provider configuration
 
 ```ruby
@@ -252,6 +338,9 @@ Root-level settings become defaults for both nodes. Settings inside a `define` b
 - Are forwarded services bound to `127.0.0.1` unless remote access is intentional?
 - Are public networks justified and secured?
 - Are CPU and memory reasonable for the host?
+- Is the primary disk only being grown, never shrunk?
+- Are additional disks uniquely named and within the controller limit?
+- Does the guest provisioning safely and idempotently handle partitions, LVM, filesystems, UUID mounts, and reruns?
 - Are provisioners ordered, named where useful, and idempotent?
 - Are scripts using LF line endings for Linux guests?
 - Are secrets absent from the file, arguments, logs, and committed environment files?
