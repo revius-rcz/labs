@@ -107,6 +107,8 @@ This section is not applicable to macOS users.
 
 ### Vagrant
 
+For a complete tutorial, command cheat sheet, `Vagrantfile` reference, example lab, and troubleshooting workflow, see [Vagrant with VirtualBox Labs](vagrant/SKILL.md).
+
 > Disconnect from the VPN when installing Vagrant plugins.
 
 1. Download and install Vagrant:
@@ -150,7 +152,7 @@ This section is not applicable to macOS users.
    vagrant provision
    vagrant box list
    vagrant box remove <box>
-   vagrant add <box>
+   vagrant box add <box>
    vagrant global-status
    vagrant snapshot save <name>
    vagrant snapshot restore <name>
